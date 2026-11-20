@@ -2,15 +2,23 @@
 
 Um painel limpo para a **Turing Smart Screen 3.5"** (a telinha USB que fica dentro do gabinete), feito em Python em cima da biblioteca [turing-smart-screen-python](https://github.com/mathoudebine/turing-smart-screen-python).
 
-Mostra CPU, RAM e GPU, o clima da sua cidade, avisos do **Claude Code** quando uma sessão termina ou precisa de você, e troca sozinho para um **modo jogo** com FPS quando você abre um jogo.
+O topo (hora, data e clima) fica fixo e embaixo alternam páginas: **PC** (CPU, RAM, GPU e Claude Code), **previsão do tempo** e **música tocando agora**. Avisos do **Claude Code** aparecem por cima quando uma sessão termina ou precisa de você, e a tela troca sozinha para um **modo jogo** com FPS quando você abre um jogo.
 
-| Painel | Aviso do Claude | Modo jogo |
+| PC | Previsão | Música |
 |---|---|---|
-| ![Painel](docs/painel@2x.png) | ![Aviso do Claude](docs/aviso@2x.png) | ![Modo jogo](docs/modo-jogo@2x.png) |
+| ![PC](docs/painel@2x.png) | ![Previsão](docs/previsao@2x.png) | ![Música](docs/musica@2x.png) |
+
+| Aviso do Claude | Modo jogo |
+|---|---|
+| ![Aviso do Claude](docs/aviso@2x.png) | ![Modo jogo](docs/modo-jogo@2x.png) |
 
 ## O que tem
 
-- **Hora, data e clima** da sua cidade ([Open-Meteo](https://open-meteo.com), sem chave de API).
+- **Hora, data e clima** da sua cidade sempre no topo ([Open-Meteo](https://open-meteo.com), sem chave de API).
+- **Páginas que alternam** a cada 12 s (configurável), com bolinhas indicando a página:
+  - **PC**: medidores e Claude Code (abaixo).
+  - **Previsão**: temperatura das próximas 12 horas, com chance de chuva, e os próximos 5 dias.
+  - **Música**: capa, música, artista, álbum e progresso do que estiver tocando no Windows (Spotify, YouTube no navegador, players). Só entra na rodada quando tem algo tocando ou pausado há menos de 2 minutos.
 - **CPU, RAM e GPU** em medidores; temperatura da GPU colorida (verde, amarelo a partir de 60°, vermelho a partir de 78°). O cartão da GPU ganha **borda vermelha acima de 80%** de uso.
 - **Notificações do Claude Code**: as últimas sessões que terminaram (verde) ou que estão esperando você (amarelo). Quando chega uma nova, um aviso grande aparece por cima da tela por 8 segundos.
 - **Uso do Claude**: % do limite semanal e tokens gastos na semana (desde terça 10h).
@@ -38,10 +46,10 @@ copy config.example.json config.json
 
 Edite o `config.json` com a sua cidade (latitude/longitude) e, se quiser, a porta COM (`"AUTO"` tenta achar sozinha).
 
-Veja como vai ficar sem precisar da tela:
+Veja como vai ficar sem precisar da tela (`--page` escolhe `pc`, `forecast` ou `music`):
 
 ```powershell
-.\.venv\Scripts\python.exe screen.py --preview previa.png
+.\.venv\Scripts\python.exe screen.py --preview previa.png --page forecast
 ```
 
 Rodar na tela: dois cliques em `iniciar-tela.vbs` (sem janela). Para parar: `parar-tela.cmd`.
@@ -83,6 +91,7 @@ Sem isso, o cartão de FPS mostra "sem permissão" e o resto do modo jogo funcio
 | `com_port` | `"AUTO"` | Porta da tela, ex.: `"COM4"` |
 | `brightness` | `30` | Brilho em %. A rev. A esquenta acima de ~50% |
 | `city`, `lat`, `lon`, `timezone` | São Paulo | Cidade do clima |
+| `page_seconds` | `12` | Tempo de cada página |
 | `gpu_alert_percent` | `80` | Uso de GPU que deixa a borda vermelha |
 | `overlay_seconds` | `8` | Tempo do aviso do Claude por cima da tela |
 | `event_max_age_hours` | `12` | Notificações mais velhas que isso somem |

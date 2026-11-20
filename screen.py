@@ -40,7 +40,8 @@ TIMEZONE = _CFG.get("timezone", "America/Sao_Paulo")
 EVENTS_FILE = Path.home() / ".claude" / "turing-screen" / "events.jsonl"
 EVENT_MAX_AGE_H = _CFG.get("event_max_age_hours", 12)   # notificações mais velhas que isso somem
 OVERLAY_SECONDS = _CFG.get("overlay_seconds", 8)        # tempo do aviso do Claude por cima da tela
-GPU_ALERT = _CFG.get("gpu_alert_percent", 80)           # % de GPU que deixa o cartão com borda vermelha
+GPU_ALERT = _CFG.get("gpu_alert_percent", 80)
+PAGE_SECONDS = _CFG.get("page_seconds", 12)            # tempo de cada página (PC, previsão, música)           # % de GPU que deixa o cartão com borda vermelha
 
 W, H = 480, 320
 S = 2                    # supersampling: desenha em 2x e reduz (bordas suaves)
@@ -156,13 +157,20 @@ class Weather(threading.Thread):
         r = requests.get("https://api.open-meteo.com/v1/forecast", timeout=15, params={
             "latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
             "current": "temperature_2m,weather_code,is_day",
-            "daily": "temperature_2m_max,temperature_2m_min", "forecast_days": 1,
+            "daily": "temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max",
+            "hourly": "temperature_2m,precipitation_probability", "forecast_days": 5,
         })
         j = r.json()
-        c, dd = j["current"], j["daily"]
+        c, dd, hh = j["current"], j["daily"], j["hourly"]
+        days = [{"date": dd["time"][i], "code": dd["weather_code"][i], "max": dd["temperature_2m_max"][i],
+                 "min": dd["temperature_2m_min"][i], "rain": dd["precipitation_probability_max"][i] or 0}
+                for i in range(len(dd["time"]))]
+        hours = [{"time": hh["time"][i], "temp": hh["temperature_2m"][i],
+                  "rain": hh["precipitation_probability"][i] or 0} for i in range(len(hh["time"]))]
         self.data = {
             "temp": c["temperature_2m"], "code": c["weather_code"], "day": c["is_day"],
             "max": dd["temperature_2m_max"][0], "min": dd["temperature_2m_min"][0],
+            "days": days, "hours": hours,
         }
 
     def run(self):
@@ -381,7 +389,128 @@ def ago(ts):
     return f"{int(sec // 3600)} h"
 
 
-def render(st, weather, events, usage=None, overlay=None, now=None):
+DIAS_CURTOS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+RAIN_C = (125, 211, 252)
+LINE_C = (253, 186, 116)
+
+
+def body_forecast(d, weather, now):
+    """Página de previsão: próximas 12 horas (a cada 2 h) + 5 dias. Números grandes pra ler de longe."""
+    if not weather or "days" not in weather:
+        text(d, (240, 185), "Carregando previsão…", "small", DIM, "mm")
+        return
+    # próximas horas
+    y0, y1 = 64, 158
+    d.rounded_rectangle(s(18, y0, 462, y1), radius=int(12 * S), fill=CARD)
+    key = now.strftime("%Y-%m-%dT%H:00")
+    hrs = weather["hours"]
+    i0 = next((i for i, h in enumerate(hrs) if h["time"] >= key), 0)
+    hrs = hrs[i0:i0 + 12:2]                      # 6 pontos: agora, +2h, +4h...
+    if len(hrs) >= 2:
+        temps = [h["temp"] for h in hrs]
+        lo, hi = min(temps), max(temps)
+        span = max(hi - lo, 1)
+        xs = [52 + i * (376 / (len(hrs) - 1)) for i in range(len(hrs))]
+        ys = [y0 + 58 - (t - lo) / span * 22 for t in temps]
+        d.line([v for xy in zip(xs, ys) for v in s(*xy)], fill=LINE_C, width=int(3 * S), joint="curve")
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            d.ellipse(s(x - 3.5, y - 3.5, x + 3.5, y + 3.5), fill=LINE_C)
+            text(d, (x, y - 15), f"{round(temps[i])}°", "badge", TEXT, "mm")
+            hour = "agora" if i == 0 else hrs[i]["time"][11:13] + "h"
+            text(d, (x, y1 - 13), hour, "small", MUTED, "mm")
+            if hrs[i]["rain"] >= 30:
+                text(d, (x, y1 - 29), f"{hrs[i]['rain']}%", "small", RAIN_C, "mm")
+    # 5 dias
+    days = weather["days"][:5]
+    top, bot, gap = 166, 310, 8.5
+    cw = (444 - gap * (len(days) - 1)) / len(days)
+    for i, dd in enumerate(days):
+        x0 = 18 + i * (cw + gap)
+        cx = x0 + cw / 2
+        d.rounded_rectangle(s(x0, top, x0 + cw, bot), radius=int(12 * S), fill=CARD)
+        date = dt.date.fromisoformat(dd["date"])
+        label = "Hoje" if i == 0 else DIAS_CURTOS[date.weekday()]
+        text(d, (cx, top + 15), label, "row", TEXT if i == 0 else MUTED, "mm")
+        weather_icon(d, cx, top + 44, dd["code"], 1)
+        text(d, (cx, top + 82), f"{round(dd['max'])}°", "ov_name", TEXT, "mm")
+        text(d, (cx, top + 106), f"{round(dd['min'])}°", "ov_msg", MUTED, "mm")
+        rain = dd["rain"]
+        rc = RAIN_C if rain >= 30 else DIM
+        rt = f"{rain}%"
+        wx = tw(rt, "badge")
+        dx = cx - (wx + 10) / 2                 # gotinha + %
+        d.ellipse(s(dx, top + 128, dx + 7, top + 135), fill=rc)
+        d.polygon(s(dx + 0.6, top + 130, dx + 3.5, top + 123, dx + 6.4, top + 130), fill=rc)
+        text(d, (dx + 10, top + 130), rt, "badge", rc, "lm")
+
+
+def fmt_time(sec):
+    sec = int(sec or 0)
+    return f"{sec // 60}:{sec % 60:02d}"
+
+
+def body_music(img, d, m):
+    """Página de música: capa, título, artista e progresso."""
+    y0, y1 = 64, 310
+    d.rounded_rectangle(s(18, y0, 462, y1), radius=int(14 * S), fill=CARD)
+    if not m:
+        text(d, (240, 187), "Nada tocando", "small", DIM, "mm")
+        return
+    ax0, ay0, a = 32, 80, 214
+    if m.get("art") is not None:
+        art = m["art"].copy()
+        w, h = art.size
+        side = min(w, h)                                  # corta pro quadrado
+        art = art.crop(((w - side) // 2, (h - side) // 2, (w + side) // 2, (h + side) // 2))
+        art = art.resize((a * S, a * S), Image.LANCZOS)
+        mask = Image.new("L", art.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, a * S - 1, a * S - 1), radius=int(10 * S), fill=255)
+        img.paste(art, (ax0 * S, ay0 * S), mask)
+    else:
+        d.rounded_rectangle(s(ax0, ay0, ax0 + a, ay0 + a), radius=int(10 * S), fill=TRACK)
+        cx, cy = ax0 + a / 2, ay0 + a / 2
+        d.ellipse(s(cx - 22, cy + 10, cx - 2, cy + 26), fill=DIM)          # nota musical
+        d.rectangle(s(cx - 6, cy - 30, cx - 2, cy + 18), fill=DIM)
+        d.polygon(s(cx - 6, cy - 30, cx + 20, cy - 22, cx + 20, cy - 12, cx - 2, cy - 19), fill=DIM)
+
+    x0, x1 = ax0 + a + 18, 448
+    # app + estado
+    app_c = OK if m["app"] == "Spotify" else MUTED
+    if m["playing"]:
+        d.polygon(s(x0, ay0 + 6, x0, ay0 + 16, x0 + 9, ay0 + 11), fill=app_c)
+        state = "tocando"
+    else:
+        d.rectangle(s(x0, ay0 + 6, x0 + 3, ay0 + 16), fill=MUTED)
+        d.rectangle(s(x0 + 6, ay0 + 6, x0 + 9, ay0 + 16), fill=MUTED)
+        state = "pausado"
+    text(d, (x0 + 15, ay0 + 11), f"{m['app']} · {state}", "small", app_c if m["playing"] else MUTED, "lm")
+    # título (até 2 linhas), artista, álbum
+    lines = wrap(m["title"], "ov_name", x1 - x0)
+    for i, ln in enumerate(lines):
+        text(d, (x0, ay0 + 44 + i * 28), ln, "ov_name", TEXT, "lm")
+    ya = ay0 + 44 + len(lines) * 28 + 4
+    text(d, (x0, ya), fit(m["artist"], "ov_msg", x1 - x0), "ov_msg", MUTED, "lm")
+    if m["album"] and m["album"] != m["title"]:
+        text(d, (x0, ya + 20), fit(m["album"], "small", x1 - x0), "small", DIM, "lm")
+    # progresso
+    if m.get("dur"):
+        by = ay0 + a - 22
+        bar(d, x0, by, x1, 5, (m["pos"] or 0) / m["dur"], OK if m["app"] == "Spotify" else CLAUDE)
+        text(d, (x0, by + 17), fmt_time(m["pos"]), "small", MUTED, "lm")
+        text(d, (x1, by + 17), fmt_time(m["dur"]), "small", MUTED, "rm")
+
+
+def page_dots(d, pages, page):
+    if not pages or len(pages) < 2:
+        return
+    n = len(pages)
+    x = 240 - (n - 1) * 5
+    for i, pg in enumerate(pages):
+        r = 2
+        d.ellipse(s(x + i * 10 - r, 315 - r, x + i * 10 + r, 315 + r), fill=TEXT if pg == page else DIM)
+
+
+def render(st, weather, events, usage=None, overlay=None, now=None, page="pc", music=None, pages=None):
     now = now or dt.datetime.now()
     img = Image.new("RGB", (W * S, H * S), BG)
     d = ImageDraw.Draw(img)
@@ -408,6 +537,16 @@ def render(st, weather, events, usage=None, overlay=None, now=None):
         text(d, (rx, 40), desc, "date", MUTED, "rm")
     else:
         text(d, (462, 31), f"{CITY} · …", "date", DIM, "rm")
+
+    if page in ("forecast", "music"):
+        if page == "forecast":
+            body_forecast(d, weather, now)
+        else:
+            body_music(img, d, music)
+        page_dots(d, pages, page)
+        if overlay:
+            img = draw_overlay(img, overlay)
+        return img.resize((W, H), Image.LANCZOS)
 
     # ---------------------------------------------------------- cards
     cw, ch, gap, top = 142, 146, 9, 64
@@ -486,6 +625,7 @@ def render(st, weather, events, usage=None, overlay=None, now=None):
         text(d, (lx + wn + 1, gcy + 6), "%", "mini", MUTED, "ls")
     tok = "…" if not usage or usage.tokens is None else f"{fmt_tokens(usage.tokens)} tokens"
     text(d, (ucx, py1 - 13), tok, "row_m", TEXT, "mm")
+    page_dots(d, pages, page)
 
     if overlay:
         img = draw_overlay(img, overlay)
@@ -640,6 +780,7 @@ def main():
     ap.add_argument("--gpu", type=float, help="prévia com uso de GPU forçado (ex.: 92)")
     ap.add_argument("--game", help="prévia do modo jogo com esse nome de jogo")
     ap.add_argument("--demo", action="store_true", help="prévia só com dados de exemplo (para prints)")
+    ap.add_argument("--page", default="pc", choices=["pc", "forecast", "music"], help="página da prévia")
     args = ap.parse_args()
 
     try:
@@ -669,7 +810,16 @@ def main():
             st = {"cpu": 23, "cpu_peak": 61, "ram": 41, "ram_used": 13.1, "ram_total": 32,
                   "gpu": args.gpu if args.gpu is not None else 47, "gpu_temp": 58,
                   "vram_used": 5.4, "vram_total": 12}
-            weather.data = {"temp": 24, "code": 2, "day": 1, "max": 29, "min": 17}
+            import math as _m
+            t0 = dt.datetime.now().replace(minute=0, second=0, microsecond=0)
+            hours = [{"time": (t0 + dt.timedelta(hours=i)).strftime("%Y-%m-%dT%H:00"),
+                      "temp": 23 + 5 * _m.sin((i - 2) / 4), "rain": [0, 0, 10, 40, 60, 30][i % 6]}
+                     for i in range(24)]
+            days = [{"date": (t0.date() + dt.timedelta(days=i)).isoformat(), "code": c, "max": mx,
+                     "min": mn, "rain": r}
+                    for i, (c, mx, mn, r) in enumerate([(2, 29, 17, 10), (61, 24, 16, 70), (3, 22, 15, 30),
+                                                         (0, 27, 14, 0), (1, 30, 18, 5)])]
+            weather.data = {"temp": 24, "code": 2, "day": 1, "max": 29, "min": 17, "days": days, "hours": hours}
             now_ts = time.time()
             evs = [{"ts": now_ts - 5, "session": "a", "type": "done", "project": "meu-site",
                     "message": "Deploy feito e testes passando"},
@@ -683,13 +833,27 @@ def main():
             img = render_game(st, {"name": args.game, "since": time.time() - 4500}, usage, ov,
                               fps=(144.0, 97.0, None))
         else:
-            img = render(st, weather.data, evs, usage, overlay=ov)
+            music = None
+            if args.page == "music":
+                art = Image.new("RGB", (300, 300))
+                ad = ImageDraw.Draw(art)
+                for y in range(300):            # capa de exemplo: degradê
+                    ad.line((0, y, 300, y), fill=(40 + y // 3, 30 + y // 6, 90 + y // 4))
+                ad.ellipse((90, 90, 210, 210), outline=(250, 200, 120), width=10)
+                music = {"title": "Midnight Drive", "artist": "Neon Garage", "album": "Night Runs",
+                         "playing": True, "pos": 83, "dur": 214, "art": art, "app": "Spotify"}
+            img = render(st, weather.data, evs, usage, overlay=ov, page=args.page, music=music,
+                         pages=["pc", "forecast", "music"])
         img.save(args.preview)
         img.resize((W * 2, H * 2), Image.NEAREST).save(args.preview.replace(".png", "@2x.png"))
         print("ok", args.preview)
         return
 
     weather.start()
+    from music_reader import MusicReader
+    music = MusicReader()
+    music.start()
+    page_i, page_t = 0, time.time()
     usage.start()
     stop = threading.Event()
     last_seen = time.time()          # só avisa eventos que chegarem depois de ligar
@@ -727,7 +891,12 @@ def main():
                 f, low = fps_reader.read()
                 frame = render_game(st, game, usage, overlay, fps=(f, low, fps_reader.error))
             else:
-                frame = render(st, weather.data, events, usage, overlay)
+                pages = ["pc", "forecast"] + (["music"] if music.data else [])
+                if time.time() - page_t >= PAGE_SECONDS:
+                    page_i, page_t = page_i + 1, time.time()
+                page = pages[page_i % len(pages)]
+                frame = render(st, weather.data, events, usage, overlay, page=page,
+                               music=music.data, pages=pages)
             if time.time() - last_full > FULL_REFRESH_SECONDS:
                 prev, last_full = None, time.time()   # força quadro inteiro
             prev = push(lcd, frame, prev)
