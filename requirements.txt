@@ -1,0 +1,6 @@
+pyserial
+pillow
+psutil
+numpy
+requests
+nvidia-ml-py

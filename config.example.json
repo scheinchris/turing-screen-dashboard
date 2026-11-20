@@ -1,0 +1,11 @@
+{
+  "com_port": "AUTO",
+  "brightness": 30,
+  "city": "São Paulo",
+  "lat": -23.5505,
+  "lon": -46.6333,
+  "timezone": "America/Sao_Paulo",
+  "gpu_alert_percent": 80,
+  "overlay_seconds": 8,
+  "event_max_age_hours": 12
+}
